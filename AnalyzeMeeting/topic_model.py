@@ -38,40 +38,40 @@ class TopicModel():
         except Exception as e:
             print(f"An error occurred while creating the visualization: {str(e)}")
     
-    def prepared_data_to_json(self, prepared_data):
+    def prepared_html_data(self, vis_data):
         # 변환된 JSON 데이터 생성
-        json_data = {
+        html_data = {
             "mdsDat": {
-                "x": prepared_data.topic_coordinates['x'].tolist(),
-                "y": prepared_data.topic_coordinates['y'].tolist(),
-                "topics": prepared_data.topic_coordinates['topics'].tolist(),
-                "cluster": prepared_data.topic_coordinates['cluster'].tolist(),
-                "Freq": prepared_data.topic_coordinates['Freq'].tolist(),
+                "x": vis_data.topic_coordinates['x'].tolist(),
+                "y": vis_data.topic_coordinates['y'].tolist(),
+                "topics": vis_data.topic_coordinates['topics'].tolist(),
+                "cluster": vis_data.topic_coordinates['cluster'].tolist(),
+                "Freq": vis_data.topic_coordinates['Freq'].tolist(),
             },
             "tinfo": {
-                "Term": prepared_data.topic_info['Term'].tolist(),
-                "Freq": prepared_data.topic_info['Freq'].tolist(),
-                "Total": prepared_data.topic_info['Total'].tolist(),
-                "Category": prepared_data.topic_info['Category'].tolist(),
-                "logprob": prepared_data.topic_info['logprob'].tolist(),
-                "loglift": prepared_data.topic_info['loglift'].tolist(),
+                "Term": vis_data.topic_info['Term'].tolist(),
+                "Freq": vis_data.topic_info['Freq'].tolist(),
+                "Total": vis_data.topic_info['Total'].tolist(),
+                "Category": vis_data.topic_info['Category'].tolist(),
+                "logprob": vis_data.topic_info['logprob'].tolist(),
+                "loglift": vis_data.topic_info['loglift'].tolist(),
             },
             "token.table": {
-                "Topic": prepared_data.token_table['Topic'].tolist(),
-                "Freq": prepared_data.token_table['Freq'].tolist(),
-                "Term": prepared_data.token_table['Term'].tolist(),
+                "Topic": vis_data.token_table['Topic'].tolist(),
+                "Freq": vis_data.token_table['Freq'].tolist(),
+                "Term": vis_data.token_table['Term'].tolist(),
             },
-            "R": prepared_data.R,
-            "lambda.step": prepared_data.lambda_step,
-            "plot.opts": prepared_data.plot_opts,
-            "topic.order": prepared_data.topic_order
+            "R": vis_data.R,
+            "lambda.step": vis_data.lambda_step,
+            "plot.opts": vis_data.plot_opts,
+            "topic.order": vis_data.topic_order
         }
         
-        return json.dumps(json_data)
+        return html_data
 
     def make_lda_json(self):
         vis_data = pyLDAvis.lda_model.prepare(self.best_model, self.feat_vec, self.count_vec)
-        json_data = self.prepared_data_to_json(vis_data)
+        json_data = self.prepared_html_data(vis_data)
         return json_data
 
 if __name__ == '__main__':

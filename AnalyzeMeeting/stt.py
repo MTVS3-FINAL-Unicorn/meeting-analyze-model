@@ -3,25 +3,28 @@ import os
 import uuid
 import whisper
 
-model = whisper.load_model("large-v3")
-
-def prepare_audio(audio_file):
-    file_uuid = str(uuid.uuid4())
-    file_path = os.path.join('./tmp', f"{file_uuid}.wav")
-    if not os.path.exists('./tmp'):
-        os.mkdir('./tmp')
-    with open(file_path, "wb") as f:
-        f.write(audio_file)
-    return file_path
-
-def stt_whisper(audio_file):
-    file_path = prepare_audio(audio_file)
-    result = model.transcribe(file_path, language='ko')
-
-    import os
-    os.remove(file_path)
+class STTWhisper:
+    def __init__(self, model_name="large-v3"):
+        """Whisper 모델을 로드합니다."""
+        self.model = whisper.load_model(model_name)
+        
+    def prepare_audio(self, audio_file: bytes) -> str:
+        """오디오 데이터를 임시 파일로 저장하고 경로를 반환합니다."""
+        file_uuid = str(uuid.uuid4())
+        file_path = os.path.join('./tmp', f"{file_uuid}.wav")
+        if not os.path.exists('./tmp'):
+            os.mkdir('./tmp')
+        with open(file_path, "wb") as f:
+            f.write(audio_file)
+        return file_path
     
-    return result['text']
+    def transcribe(self, audio_file: bytes) -> str:
+        """Whisper 모델을 사용하여 오디오 파일을 텍스트로 변환합니다."""
+        file_path = self.prepare_audio(audio_file)
+        result = self.model.transcribe(file_path, language='ko')
+        os.remove(file_path)  # 임시 파일 삭제
+        return result['text']
+
 
 
 if __name__ == "__main__":
