@@ -2,6 +2,8 @@ import boto3
 from botocore.exceptions import NoCredentialsError
 from dotenv import load_dotenv
 import os
+import httpx
+from fastapi import HTTPException
 
 # .env 파일 로드
 load_dotenv()
@@ -35,3 +37,18 @@ if __name__ == '__main__':
     file_path = 'ComfyUI/output/AnimateDiff_00009.mp4'
     bucket = 'jurassic-park'
     key = 'comfy_result.wav' 
+
+async def post_wordcloud(file_path, key):   
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            
+            file = {
+                "wordcloudFile": (key, open(file_path, "rb"))
+            }
+            response = await client.post("http://125.132.216.190:319/api/v1/report/whole/wordcloud", files=file)
+            response.raise_for_status()
+            
+            return key
+        
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
