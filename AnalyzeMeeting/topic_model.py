@@ -8,7 +8,7 @@ from sklearn.model_selection import GridSearchCV
 
 
 class TopicModel():
-    def __init__(self, token_list, corp_id, meeting_id):
+    def __init__(self, token_list):
         self.count_vec = CountVectorizer(max_df=10, max_features=1000, min_df=1, ngram_range=(1,2))
         self.feat_vec = self.count_vec.fit_transform(token_list)
         self.lda = LatentDirichletAllocation(random_state=42)
@@ -17,9 +17,6 @@ class TopicModel():
         self.search.fit(self.feat_vec)
         self.best_model = self.search.best_estimator_
         self.feature_names = self.count_vec.get_feature_names_out()
-        
-        self.meeting_id = meeting_id
-        self.corp_id = corp_id
 
     def show_topics(self, num_top_words):
         for topic_idx, topic in enumerate(self.best_model.components_):
@@ -75,7 +72,6 @@ class TopicModel():
     def make_lda_json(self):
         vis_data = pyLDAvis.lda_model.prepare(self.best_model, self.feat_vec, self.count_vec)
         json_data = self.prepared_data_to_json(vis_data)
-        # print(json_data)
         return json_data
 
 if __name__ == '__main__':
