@@ -89,7 +89,7 @@ class EmbeddingVectorModel():
                 result = sock.connect_ex(('localhost', port))
                 if result != 0:
                     # 사용 가능한 포트일 경우 반환
-                    return port
+                    return str(port)
                 
     # def exce(self, ):
         
