@@ -1,24 +1,27 @@
 import base64
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Dict, List, Tuple, Union
+from uuid import uuid1
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-import logging
+from langchain.embeddings import OpenAIEmbeddings
 from pydantic import BaseModel
-from utils.upload_s3 import post_wordcloud
-from utils.handle_server_data import aggregate_meeting_tokens, aggregate_question_tokens
-from AnalyzeMeeting.embedding_vector_model import EmbeddingVectorModel
+
+from AnalyzeMeeting.embedding_vector_model import EmbeddingVectorAnalyzer
+from AnalyzeMeeting.gen_wordcloud import make_wordcloud
+from AnalyzeMeeting.sentiment_model import SentimentAnalyzer
 from AnalyzeMeeting.stt import STTWhisper
 from AnalyzeMeeting.text_organize import remove_stopwords, tokenize_text
 from AnalyzeMeeting.topic_model import TopicModel
-from AnalyzeMeeting.sentiment_model import SentimentAnalyzer
-from typing import List
-from contextlib import asynccontextmanager
-from uuid import uuid1
-from typing import Dict, List, Tuple, Union
-
-from AnalyzeMeeting.gen_wordcloud import make_wordcloud
+from utils.handle_server_data import aggregate_meeting_tokens, aggregate_question_tokens
+from utils.upload_s3 import post_wordcloud
 
 # 환경변수 로드
 load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 logging.basicConfig(
     filename='app.log',        # 로그 파일 이름
@@ -30,11 +33,11 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embedding_vector_model, sentiment_analyzer, tokens, stt_whisper
-    embedding_vector_model = EmbeddingVectorModel()
+    global sentiment_analyzer, tokens, stt_whisper, embedding_model
     sentiment_analyzer = SentimentAnalyzer()
     tokens = {}
-    stt_whisper = STTWhisper()    
+    stt_whisper = STTWhisper()
+    embedding_model = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
     yield
     
     
@@ -138,10 +141,10 @@ async def analyze_all(response: AnalyzeAllIn):
         all_tokens = aggregate_meeting_tokens(corp_id, meeting_id, tokens)
         topic_model = TopicModel(all_tokens)
         json_result = topic_model.make_lda_json()
-        
-        embedding_vector_model.make_token_embeddings(all_tokens)
-        port = embedding_vector_model.find_available_port()
-        embedding_vector_model.run_tensorboard('127.0.0.1', port)
+        embedding_vector_analyzer = EmbeddingVectorAnalyzer(corp_id=corp_id, meeting_id=meeting_id, embedding_model=embedding_model)
+        embedding_vector_analyzer.make_token_embeddings(all_tokens)
+        port = embedding_vector_analyzer.find_available_port()
+        embedding_vector_analyzer.run_tensorboard('127.0.0.1', port)
         
         file_name = f"wordcloud_{str(uuid1())}.png"
         output_image_path = f"./data/{file_name}"
@@ -151,7 +154,7 @@ async def analyze_all(response: AnalyzeAllIn):
         
         sentiment_result = sentiment_analyzer.analyze_token_sentiment(all_tokens)
         
-        return {"result":"모든 분석이 성공적으로 완료되었습니다.", "topic_result":json_result, "wordcloud_filename":file_name, "sentiment_result":sentiment_result}
+        return {"result":"모든 분석이 성공적으로 완료되었습니다.", "topic_result":json_result, "wordcloud_filename":file_name, "sentiment_result":sentiment_result, "tensorboard_url":f"http://127.0.0.1:{port}/#projector"}
     
     except KeyError:
         if corp_id not in tokens:
@@ -187,6 +190,9 @@ async def analyze_topic(response: AnalyzeTopicIn):
 # 임베딩 분석, 각 답변에 대해 거리 확인
 class AnalyzeEmbeddingIn(BaseModel):
     responses: list
+    corpId: int
+    meetingId: int
+    questionId: int
     
 class AnalyzeEmbeddingOut(BaseModel):
     result: str
@@ -195,10 +201,11 @@ class AnalyzeEmbeddingOut(BaseModel):
 @app.post("/analyze-embedding", response_model=AnalyzeEmbeddingOut, tags=['Analyze each question'])
 async def analyze_embedding(response: AnalyzeEmbeddingIn):
     logging.info(f"endpoint: /analyze-embedding : {response}")
-    responses = response.responses
-    embedding_vector_model.make_sentence_embeddings(responses)
-    port = embedding_vector_model.find_available_port()
-    embedding_vector_model.run_tensorboard('127.0.0.1', port)
+    responses, corp_id, meeting_id, question_id = response.responses, response.corpId, response.meetingId, response.questionId
+    embedding_vector_analyzer = EmbeddingVectorAnalyzer(corp_id=corp_id, meeting_id=meeting_id, question_id=question_id, embedding_model=embedding_model)
+    embedding_vector_analyzer.make_sentence_embeddings(responses)
+    port = embedding_vector_analyzer.find_available_port()
+    embedding_vector_analyzer.run_tensorboard('127.0.0.1', port)
     
     return {"result":"임베딩 분석이 성공적으로 완료되었습니다.", "tensorboard_url":f"http://127.0.0.1:{port}/#projector"}
 
