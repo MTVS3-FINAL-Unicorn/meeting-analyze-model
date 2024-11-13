@@ -1,6 +1,7 @@
 import base64
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+import logging
 from pydantic import BaseModel
 from utils.upload_s3 import post_wordcloud
 from utils.handle_server_data import aggregate_meeting_tokens, aggregate_question_tokens
@@ -18,6 +19,14 @@ from AnalyzeMeeting.gen_wordcloud import make_wordcloud
 
 # 환경변수 로드
 load_dotenv()
+
+logging.basicConfig(
+    filename='app.log',        # 로그 파일 이름
+    filemode='a',               # 'a'는 기존 파일에 추가, 'w'는 파일을 덮어쓰기
+    level=logging.INFO,         # 로그 레벨 설정
+    encoding='utf-8-sig',
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,6 +60,8 @@ class SubmitTextOut(BaseModel):
     
 @app.post("/submit-text", response_model=SubmitTextOut, tags=['Submit meeting data'])
 async def submit_text_response(response: SubmitTextIn):
+    print(f'endpoint: /submit-text, response: {response}')
+    logging.info(f"/submit-text : {response}")
     corp_id, meeting_id, question_id, user_id, text_response = response.corpId, response.meetingId, response.questionId, response.userId, response.textResponse
     if corp_id not in tokens:
             tokens[corp_id] = {meeting_id: {question_id: {user_id: {'tokens':[],'answers':[]}}}}
@@ -81,6 +92,9 @@ class SubmitVoiceOut(BaseModel):
 @app.post("/submit-voice", response_model=SubmitVoiceOut, tags=['Submit meeting data'])
 async def submit_voice_response(response: SubmitVoiceIn):
     try:
+        logging.info(f"/submit-voice: {response}")
+        print(f'endpoint: /submit-voice, response: {response}')
+        
         corp_id, meeting_id, question_id, user_id, voice_response = response.corpId, response.meetingId, response.questionId, response.userId, response.voiceResponse
         voice_data = base64.b64decode(voice_response)
         text_response = stt_whisper.transcribe(voice_data)
@@ -118,6 +132,8 @@ class AnalyzeAllOut(BaseModel):
 @app.post("/analyze-all", response_model=AnalyzeAllOut, tags=['Analyze all questions'])
 async def analyze_all(response: AnalyzeAllIn):
     try:
+        print(f'endpoint: /analyze-all, response: {response}')
+        logging.info(f"endpoint: /analyze-all: {response}")
         corp_id, meeting_id = response.corpId, response.meetingId
         all_tokens = aggregate_meeting_tokens(corp_id, meeting_id, tokens)
         topic_model = TopicModel(all_tokens)
@@ -129,9 +145,9 @@ async def analyze_all(response: AnalyzeAllIn):
         
         file_name = f"wordcloud_{str(uuid1())}.png"
         output_image_path = f"./data/{file_name}"
-        make_wordcloud(tokens=all_tokens, mask_image_path=None, width=800, height=400, output_image_path=output_image_path)
+        make_wordcloud(tokens=all_tokens, mask_image_path=None, width=800, height=400, output_image_name=file_name)
         
-        await post_wordcloud(output_image_path, file_name)
+        await post_wordcloud(output_image_path, file_name, meeting_id)
         
         sentiment_result = sentiment_analyzer.analyze_token_sentiment(all_tokens)
         
@@ -159,6 +175,7 @@ class AnalyzeTopicOut(BaseModel):
     
 @app.post("/analyze-topic", response_model=AnalyzeTopicOut, tags=['Analyze each question'])
 async def analyze_topic(response: AnalyzeTopicIn):
+    logging.info(f"endpoint: /analyze-topic : {response}")
     responses = response.responses
     question_tokens = aggregate_question_tokens(responses)
     topic_model = TopicModel(question_tokens)
@@ -177,6 +194,7 @@ class AnalyzeEmbeddingOut(BaseModel):
     
 @app.post("/analyze-embedding", response_model=AnalyzeEmbeddingOut, tags=['Analyze each question'])
 async def analyze_embedding(response: AnalyzeEmbeddingIn):
+    logging.info(f"endpoint: /analyze-embedding : {response}")
     responses = response.responses
     embedding_vector_model.make_sentence_embeddings(responses)
     port = embedding_vector_model.find_available_port()
@@ -194,12 +212,15 @@ class GenerateWordcloudOut(BaseModel):
 
 @app.post("/generate-wordcloud", response_model=GenerateWordcloudOut, tags=['Analyze each question'])
 async def generate_wordcloud(response: GenerateWordcloudIn):
+    logging.info(f"endpoint: /generate-wordcloud : {response}")
     responses = response.responses
+    meeting_id = responses[0]['meetingId']
+    print(f'endpoint: /generate-wordcloud, response: {response}')
     tokens = remove_stopwords(tokenize_text(aggregate_question_tokens(responses)))
     file_name = f"wordcloud_{str(uuid1())}.png"
     output_image_path = f"./data/{file_name}"
-    make_wordcloud(tokens=tokens, mask_image_path=None, width=800, height=400, output_image_path=output_image_path)
-    await post_wordcloud(output_image_path, file_name)
+    make_wordcloud(tokens=tokens, mask_image_path=None, width=800, height=400, output_image_name=file_name)
+    await post_wordcloud(output_image_path, file_name, meeting_id)
     
     return {"result":"워드 클라우드가 성공적으로 생성되었습니다.", "wordcloud_filename":file_name}
 
@@ -216,5 +237,19 @@ class AnalyzeSentimentOut(BaseModel):
     
 @app.post("/analyze-sentiment", response_model=AnalyzeSentimentOut, tags=['Analyze each question'])
 async def analyze_sentiment(response: AnalyzeSentimentIn):
+    logging.info(f"endpoint: /analyze-sentiment : {response}")
     sent_result, token_count, most_common_token = sentiment_analyzer.analyze_sentence_sentiment(response.responses, most_k=response.mostCommonK)
     return {"result":"감정 분석이 성공적으로 완료되었습니다.", "sentiment_result":sent_result, "token_count":token_count, "most_common_token":most_common_token}
+
+# #시연용 분셕 사이트
+# from fastapi.templating import Jinja2Templates
+# from fastapi.responses import HTMLResponse
+# templates = Jinja2Templates(directory="./templates")
+# @app.get('/index.html')
+# async def serve_html():
+#     try:
+#         with open("./index.html", "r") as f:
+#             html_content = f.read()
+#         return HTMLResponse(content=html_content, status_code=200)
+#     except FileNotFoundError:
+#         raise HTTPException(status_code=404, detail="HTML file not found.")
