@@ -2,12 +2,14 @@ from wordcloud import WordCloud
 from PIL import Image
 import numpy as np
 from collections import Counter
+import os
 
-def make_wordcloud(tokens, mask_image_path=None, width=800, height=400, output_image_path='./data/wordcloud.png'):
-    
-    token_counts = Counter(tokens)
-    
+def make_wordcloud(tokens, mask_image_path=None, width=800, height=400, output_image_name='wordcloud.png'):
+    if not os.path.isdir("./data"):
+        os.mkdir("./data")
+    output_image_path = f"./data/{output_image_name}"
     mask_image = np.array(Image.open(mask_image_path)) if mask_image_path else None
+    token_counts = Counter(tokens)
     wordcloud = WordCloud(
         font_path='./fonts/NanumGothic.ttf', 
         width=width, 
