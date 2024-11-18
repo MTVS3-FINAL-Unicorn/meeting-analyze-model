@@ -17,7 +17,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     # 1. log 폴더 설정
     # 2. port 설정
     
-class EmbeddingVectorAnlalyzer():
+class EmbeddingVectorAnalyzer():
     def __init__(self, corp_id, meeting_id, embedding_model, question_id=None):
         self.token_list = None
         self.corp_id = corp_id
