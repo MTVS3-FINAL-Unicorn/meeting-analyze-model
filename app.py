@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from AnalyzeMeeting.embedding_vector_model import EmbeddingVectorAnalyzer
 from AnalyzeMeeting.gen_wordcloud import make_wordcloud
+from AnalyzeMeeting.make_script import MeetingScript
+from AnalyzeMeeting.make_summary import summary_model
 from AnalyzeMeeting.sentiment_model import SentimentAnalyzer
 from AnalyzeMeeting.stt import STTWhisper
 from AnalyzeMeeting.text_organize import remove_stopwords, tokenize_text
@@ -33,9 +35,9 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global sentiment_analyzer, tokens, stt_whisper, embedding_model
+    global sentiment_analyzer, meetings, stt_whisper, embedding_model
     sentiment_analyzer = SentimentAnalyzer()
-    tokens = {}
+    meetings = {}
     stt_whisper = STTWhisper()
     embedding_model = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
     yield
@@ -63,19 +65,20 @@ class SubmitTextOut(BaseModel):
     
 @app.post("/submit-text", response_model=SubmitTextOut, tags=['Submit meeting data'])
 async def submit_text_response(response: SubmitTextIn):
+    
     print(f'endpoint: /submit-text, response: {response}')
     logging.info(f"/submit-text : {response}")
-    corp_id, meeting_id, question_id, user_id, text_response = response.corpId, response.meetingId, response.questionId, response.userId, response.textResponse
-    if corp_id not in tokens:
-            tokens[corp_id] = {meeting_id: {question_id: {user_id: {'tokens':[],'answers':[]}}}}
-    if meeting_id not in tokens[corp_id]:
-        tokens[corp_id][meeting_id] = {}
-    if question_id not in tokens[corp_id][meeting_id]:
-        tokens[corp_id][meeting_id][question_id] = {}
-    if user_id not in tokens[corp_id][meeting_id][question_id]:
-        tokens[corp_id][meeting_id][question_id][user_id] = {'answers':[], 'tokens':[]}
-    tokens[corp_id][meeting_id][question_id][user_id]['tokens'].extend(remove_stopwords(tokenize_text(text_response)))
-    tokens[corp_id][meeting_id][question_id][user_id]['answers'].extend(text_response)
+    
+    corp_id, meeting_id, question_id, user_id, text_response, survey_question = response.corpId, response.meetingId, response.questionId, response.userId, response.textResponse, response.surveyQuestion
+    
+    if corp_id not in meetings:
+        meetings[corp_id] = {meeting_id:MeetingScript(corp_id, meeting_id)}
+    if meeting_id not in meetings[corp_id]:
+        meetings[corp_id][meeting_id] = MeetingScript(corp_id, meeting_id)
+        
+    meeting_script = meetings[corp_id][meeting_id]
+    meeting_script.add_question(question_id, survey_question)
+    meeting_script.add_answer(question_id, text_response, user_id)
     
     return {"result": "텍스트 응답이 성공적으로 처리되었습니다."}
 
@@ -98,30 +101,61 @@ async def submit_voice_response(response: SubmitVoiceIn):
         logging.info(f"/submit-voice: {response}")
         print(f'endpoint: /submit-voice, response: {response}')
         
-        corp_id, meeting_id, question_id, user_id, voice_response = response.corpId, response.meetingId, response.questionId, response.userId, response.voiceResponse
+        corp_id, meeting_id, question_id, user_id, voice_response, survey_question = response.corpId, response.meetingId, response.questionId, response.userId, response.voiceResponse, response.surveyQuestion
         voice_data = base64.b64decode(voice_response)
         text_response = stt_whisper.transcribe(voice_data)
-        if corp_id not in tokens:
-            tokens[corp_id] = {meeting_id: {question_id: {user_id: {'tokens':[],'answers':[]}}}}
-        if meeting_id not in tokens[corp_id]:
-            tokens[corp_id][meeting_id] = {}
-        if question_id not in tokens[corp_id][meeting_id]:
-            tokens[corp_id][meeting_id][question_id] = {}
-        if user_id not in tokens[corp_id][meeting_id][question_id]:
-            tokens[corp_id][meeting_id][question_id][user_id] = {'answers':[], 'tokens':[]}
-        tokens[corp_id][meeting_id][question_id][user_id]['tokens'].extend(remove_stopwords(tokenize_text(text_response)))
-        tokens[corp_id][meeting_id][question_id][user_id]['answers'].extend(text_response)
+        if corp_id not in meetings:
+            meetings[corp_id] = {meeting_id: MeetingScript(corp_id, meeting_id)}
+        if meeting_id not in meetings[corp_id]:
+            meetings[corp_id][meeting_id] = MeetingScript(corp_id, meeting_id)
+
+        meeting_script = meetings[corp_id][meeting_id]
+        meeting_script.add_question(question_id, survey_question)
+        meeting_script.add_answer(question_id, text_response, user_id)
         
+        logging.info(f"/submit-voice result: {text_response}")
         return {
             "result": "음성 응답이 성공적으로 처리되었습니다.",
             "text_data": text_response
                 }
         
     except Exception as e:
+        logging.error("Error: %s", e)
         raise HTTPException(status_code=400, detail=f'Error: {e}')
 
 
 '''최종 분석 처리 엔드포인트'''
+class MeetingScriptIn(BaseModel):
+    corpId: int
+    meetingId: int
+class MeetingScriptOut(BaseModel):
+    result: str
+    script: List[Dict[str, List[str]]]
+
+@app.post("/meeting-script", tags=['Analyze all questions'])
+async def meeting_script(response: MeetingScriptIn):
+    corp_id, meeting_id = response.corpId, response.meetingId
+    meeting_script = meetings[corp_id][meeting_id] 
+    script = meeting_script.to_script_format()
+    return {"result": "스크립트가 성공적으로 생성되었습니다.", "script": script}
+
+# TODO: 요약 llm 생성 및 요약 기능
+class MeetingSummaryIn(BaseModel):
+    corpId: int
+    meetingId: int
+class MeetingSummaryOut(BaseModel):
+    result: str
+    summary: str
+    
+@app.post("/meeting-summary", tags=['Analyze all questions'])
+async def meeting_summary(response: MeetingSummaryIn):
+    corp_id, meeting_id = response.corpId, response.meetingId
+    meeting_script = meetings[corp_id][meeting_id]
+    script = meeting_script.to_script_format()
+    summary = summary_model.exec(script)
+    print(summary)
+    return {"result":"요약이 성공적으로 완료되었습니다.", "summary":summary}
+        
 class AnalyzeAllIn(BaseModel):
     corpId: int
     meetingId: int
@@ -135,8 +169,10 @@ class AnalyzeAllOut(BaseModel):
 @app.post("/analyze-all", response_model=AnalyzeAllOut, tags=['Analyze all questions'])
 async def analyze_all(response: AnalyzeAllIn):
     try:
+        # logging
         print(f'endpoint: /analyze-all, response: {response}')
         logging.info(f"endpoint: /analyze-all: {response}")
+        
         corp_id, meeting_id = response.corpId, response.meetingId
         all_tokens = aggregate_meeting_tokens(corp_id, meeting_id, tokens)
         topic_model = TopicModel(all_tokens)
@@ -219,10 +255,13 @@ class GenerateWordcloudOut(BaseModel):
 
 @app.post("/generate-wordcloud", response_model=GenerateWordcloudOut, tags=['Analyze each question'])
 async def generate_wordcloud(response: GenerateWordcloudIn):
+    # logging
     logging.info(f"endpoint: /generate-wordcloud : {response}")
+    print(f'endpoint: /generate-wordcloud, response: {response}')
+    
     responses = response.responses
     meeting_id = responses[0]['meetingId']
-    print(f'endpoint: /generate-wordcloud, response: {response}')
+    
     tokens = remove_stopwords(tokenize_text(aggregate_question_tokens(responses)))
     file_name = f"wordcloud_{str(uuid1())}.png"
     output_image_path = f"./data/{file_name}"
