@@ -1,25 +1,26 @@
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
+import re
 from collections import Counter, defaultdict
-from AnalyzeMeeting.text_organize import tokenize_text, remove_stopwords
+
+from utils.handle_text import remove_stopwords, tokenize_text
+
 
 class SentimentAnalyzer:
-    def __init__(self):
+    def __init__(self, sentence_model, token_model):
         # 모델 초기화
-        self.tokenizer = AutoTokenizer.from_pretrained("jaehyeong/koelectra-base-v3-generalized-sentiment-analysis")
-        self.model = AutoModelForSequenceClassification.from_pretrained("jaehyeong/koelectra-base-v3-generalized-sentiment-analysis")
-        self.sentiment_classifier = TextClassificationPipeline(tokenizer=self.tokenizer, model=self.model, device=0)
+        self.sentence_model = sentence_model
+        self.token_model = token_model
 
     def analyze_sentence_sentiment(self, responses, most_k=5):
         result = defaultdict(dict)
         all_tokens = []
         for response in responses:
-            sentence = response['answer']
-            pred = self.sentiment_classifier(sentence)
-            result[sentence]['sentiment_score'] = pred[0]['score']
-            if 'tokens' not in result[sentence]:
-                result[sentence]['tokens'] = []
-            tokens = remove_stopwords(tokenize_text(sentence))
-            result[sentence]['tokens'].extend(tokens)
+            answer = response['answer']
+            score = self.extract_float_from_response(self.sentence_model.exec(answer)) 
+            result[answer]['sentiment_score'] = score
+            if 'tokens' not in result[answer]:
+                result[answer]['tokens'] = []
+            tokens = remove_stopwords(tokenize_text(answer))
+            result[answer]['tokens'].extend(tokens)
             all_tokens.extend(tokens)
         
         token_counter = Counter(all_tokens)
@@ -28,18 +29,29 @@ class SentimentAnalyzer:
 
     def analyze_token_sentiment(self, tokens):
         token_counter = Counter(tokens)
-        result = {}
-        for key in token_counter.keys():
-            if key not in result:
-                result[key] = {}
-            pred = self.sentiment_classifier(key)
-            result[key]['freq'] = token_counter[key]
-            result[key]['sentiment_score'] = pred[0]['score']
+        unique_tokens = list(token_counter.keys())
+
+        token_scores = self.token_model(unique_tokens)
+
+        result = {
+            token: {
+                'freq': token_counter[token],
+                'sentiment_score': score['score']
+            }
+            for token, score in zip(unique_tokens, token_scores)
+        }
+
         return result
 
+    def extract_float_from_response(self, response):
+        # 정규식을 이용해 숫자 (소수점 포함) 추출
+        match = re.search(r'\d+\.\d+', response)
+        if match:
+            return float(match.group())  # 매칭된 숫자를 float으로 변환
+        else:
+            raise ValueError("숫자를 찾을 수 없습니다.")  # 숫자가 없을 경우 에러 처리
 
 if __name__ == "__main__":
-    # target reviews
     # review_list = ['분홍색', '테마', '시즌', '정말', '부드러운', '이미지', '같아요', '고객', '좋아할', '같네요', '개인', '초록색', '브랜드', '정체', '있다고', '생각', '분홍색', '흔한', '느낌', '같아요', '차라리', '이번', '초록색', '어떨까', '초록색', '자연', '이미지', '강해서', '요즘', '트렌드', '같아요', '분홍색', '상큼', '여성', '이미지', '젊은', '인기', '많을', '초록색', '테마', '시원하고', '깨끗한', '이미지', '있을', '같아요', '분홍색', '정말', '제품', '꽃잎', '성분', '생각', '브랜드', '이미지', '관성', '유지', '초록색', '적합할', '같습니다', '분홍색', '화장품', '패키지', '같아요', '초록색', '환경', '메시지', '강화할', '있어서', '좋을', '같아요', '분홍색', '화사한', '느낌', '부담', '사용', '있을', '같아요', '초록색', '브랜드', '생각', '자연', '관련', '브랜드', '라면', '분홍색', '따뜻하고', '부드러운', '이미지', '주기', '때문', '소비자', '긍정', '반응', '있을', '같아요', '초록색', '자연스러운', '이미지', '강화하는', '좋을', '같아요', '친환경', '느낌', '강해요', '분홍색', '꽃잎', '영감', '만큼', '제품', '컬러', '생각', '초록색', '시각', '강렬한', '인상', '있어서', '좋을', '같아요', '분홍색', '고급스러운', '느낌', '있다고', '생각', '초록색', '브랜드', '자연', '이미지', '더욱', '있을', '같습니다', '분홍색', '소비자', '편안한', '느낌', '있어서', '좋다고', '생각', '초록색', '세련된', '이미지', '있을', '같아요']
     # print(analyze_token_sentiment(review_list))
     

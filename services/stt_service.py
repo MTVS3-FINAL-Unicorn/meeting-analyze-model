@@ -1,6 +1,9 @@
 import os
 import uuid
+import base64
 import whisper
+from pydub import AudioSegment
+import io
 
 class STTWhisper:
     def __init__(self, model_name="large-v3"):
@@ -20,10 +23,17 @@ class STTWhisper:
     
     def transcribe(self, audio_file: bytes) -> str:
         """Whisper 모델을 사용하여 오디오 파일을 텍스트로 변환합니다."""
+        
+        audio = AudioSegment.from_file(io.BytesIO(audio_file), format="wav")
+        if len(audio) == 0:
+            raise ValueError("음성 데이터에 아무 내용이 없습니다.")
+        
         file_path = self.prepare_audio(audio_file)
-        result = self.model.transcribe(file_path, language='ko')
-        os.remove(file_path)  # 임시 파일 삭제
-        return result['text']
+        try:
+            result = self.model.transcribe(file_path, language='ko')
+            return result['text']
+        finally:
+            os.remove(file_path)
 
 
 

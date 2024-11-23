@@ -1,5 +1,3 @@
-import json
-
 import pyLDAvis
 import pyLDAvis.lda_model
 from sklearn.decomposition import LatentDirichletAllocation

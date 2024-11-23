@@ -7,19 +7,31 @@ from uuid import uuid1
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from langchain.chat_models import ChatOllama, ChatOpenAI
 from langchain.embeddings import OpenAIEmbeddings
 from pydantic import BaseModel
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    TextClassificationPipeline,
+)
 
-from AnalyzeMeeting.embedding_vector_model import EmbeddingVectorAnalyzer
-from AnalyzeMeeting.gen_wordcloud import make_wordcloud
-from AnalyzeMeeting.make_script import MeetingScript
-from AnalyzeMeeting.make_summary import summary_model
-from AnalyzeMeeting.sentiment_model import SentimentAnalyzer
-from AnalyzeMeeting.stt import STTWhisper
-from AnalyzeMeeting.text_organize import remove_stopwords, tokenize_text
-from AnalyzeMeeting.topic_model import TopicModel
-from utils.handle_server_data import aggregate_meeting_tokens, aggregate_question_tokens
-from utils.upload_s3 import post_wordcloud
+from models.embedding_vector_model import EmbeddingVectorAnalyzer
+from models.llm_model import LLMModel
+from models.model_setting import (
+    sentiment_prompt,
+    sentiment_user_prompt_template,
+    summary_prompt,
+    summary_user_prompt_template,
+)
+from models.topic_model import TopicModel
+from services.sentiment_service import SentimentAnalyzer
+from services.stt_service import STTWhisper
+from services.wordcloud_service import make_wordcloud
+from utils.handle_meeting_data import aggregate_question_tokens
+from utils.handle_meeting_script import MeetingScript
+from utils.handle_text import remove_stopwords, tokenize_text
+from utils.post_wordcloud import post_wordcloud
 
 # 환경변수 로드
 load_dotenv()
@@ -35,11 +47,17 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global sentiment_analyzer, meetings, stt_whisper, embedding_model
-    sentiment_analyzer = SentimentAnalyzer()
+    global meetings, stt_whisper, embedding_model, summary_model, sentiment_model, sentiment_analyzer
     meetings = {}
     stt_whisper = STTWhisper()
     embedding_model = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+    summary_model = LLMModel(ChatOpenAI(model='gpt-4o-mini'), summary_prompt, summary_user_prompt_template)
+    sentiment_sentence_model = LLMModel(ChatOpenAI(model='gpt-4o-mini'), sentiment_prompt, sentiment_user_prompt_template)
+    tokenizer = AutoTokenizer.from_pretrained("jaehyeong/koelectra-base-v3-generalized-sentiment-analysis")
+    sentiment_token_model = AutoModelForSequenceClassification.from_pretrained("jaehyeong/koelectra-base-v3-generalized-sentiment-analysis")
+    sentiment_classifier = TextClassificationPipeline(tokenizer=tokenizer, model=sentiment_token_model, device=0)
+    sentiment_analyzer = SentimentAnalyzer(sentiment_sentence_model, sentiment_classifier)
+    
     yield
     
     
@@ -65,22 +83,24 @@ class SubmitTextOut(BaseModel):
     
 @app.post("/submit-text", response_model=SubmitTextOut, tags=['Submit meeting data'])
 async def submit_text_response(response: SubmitTextIn):
-    
-    print(f'endpoint: /submit-text, response: {response}')
-    logging.info(f"/submit-text : {response}")
-    
-    corp_id, meeting_id, question_id, user_id, text_response, survey_question = response.corpId, response.meetingId, response.questionId, response.userId, response.textResponse, response.surveyQuestion
-    
-    if corp_id not in meetings:
-        meetings[corp_id] = {meeting_id:MeetingScript(corp_id, meeting_id)}
-    if meeting_id not in meetings[corp_id]:
-        meetings[corp_id][meeting_id] = MeetingScript(corp_id, meeting_id)
+    try:
+        print(f'endpoint: /submit-text, response: {response}')
+        logging.info(f"/submit-text : {response}")
         
-    meeting_script = meetings[corp_id][meeting_id]
-    meeting_script.add_question(question_id, survey_question)
-    meeting_script.add_answer(question_id, text_response, user_id)
-    
-    return {"result": "텍스트 응답이 성공적으로 처리되었습니다."}
+        corp_id, meeting_id, question_id, user_id, text_response, survey_question = response.corpId, response.meetingId, response.questionId, response.userId, response.textResponse, response.surveyQuestion
+        
+        if corp_id not in meetings:
+            meetings[corp_id] = {meeting_id:MeetingScript(corp_id, meeting_id)}
+        if meeting_id not in meetings[corp_id]:
+            meetings[corp_id][meeting_id] = MeetingScript(corp_id, meeting_id)
+            
+        meeting_script = meetings[corp_id][meeting_id]
+        meeting_script.add_question(question_id, survey_question)
+        meeting_script.add_answer(question_id, text_response, user_id)
+        
+        return {"result": "텍스트 응답이 성공적으로 처리되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'error: {e}')
 
 # 음성 답변 처리 엔드포인트 (음성 파일을 STT로 변환)
 class SubmitVoiceIn(BaseModel):
@@ -139,7 +159,6 @@ async def meeting_script(response: MeetingScriptIn):
     script = meeting_script.to_script_format()
     return {"result": "스크립트가 성공적으로 생성되었습니다.", "script": script}
 
-# TODO: 요약 llm 생성 및 요약 기능
 class MeetingSummaryIn(BaseModel):
     corpId: int
     meetingId: int
@@ -168,39 +187,39 @@ class AnalyzeAllOut(BaseModel):
     
 @app.post("/analyze-all", response_model=AnalyzeAllOut, tags=['Analyze all questions'])
 async def analyze_all(response: AnalyzeAllIn):
-    try:
-        # logging
-        print(f'endpoint: /analyze-all, response: {response}')
-        logging.info(f"endpoint: /analyze-all: {response}")
-        
-        corp_id, meeting_id = response.corpId, response.meetingId
-        all_tokens = aggregate_meeting_tokens(corp_id, meeting_id, tokens)
-        topic_model = TopicModel(all_tokens)
-        json_result = topic_model.make_lda_json()
-        embedding_vector_analyzer = EmbeddingVectorAnalyzer(corp_id=corp_id, meeting_id=meeting_id, embedding_model=embedding_model)
-        embedding_vector_analyzer.make_token_embeddings(all_tokens)
-        port = embedding_vector_analyzer.find_available_port()
-        embedding_vector_analyzer.run_tensorboard('127.0.0.1', port)
-        
-        file_name = f"wordcloud_{str(uuid1())}.png"
-        output_image_path = f"./data/{file_name}"
-        make_wordcloud(tokens=all_tokens, mask_image_path=None, width=800, height=400, output_image_name=file_name)
-        
-        await post_wordcloud(output_image_path, file_name, meeting_id)
-        
-        sentiment_result = sentiment_analyzer.analyze_token_sentiment(all_tokens)
-        
-        return {"result":"모든 분석이 성공적으로 완료되었습니다.", "topic_result":json_result, "wordcloud_filename":file_name, "sentiment_result":sentiment_result, "tensorboard_url":f"http://127.0.0.1:{port}/#projector"}
+    # try:
+    # logging
+    print(f'endpoint: /analyze-all, response: {response}')
+    logging.info(f"endpoint: /analyze-all: {response}")
     
-    except KeyError:
-        if corp_id not in tokens:
-            raise HTTPException(status_code=404, detail="corpId에 해당하는 데이터가 존재하지 않습니다.")
-        elif meeting_id not in tokens[corp_id]:
-            raise HTTPException(status_code=404, detail='meetingId에 해당하는 데이터가 존재하지 않습니다.')
-    except Exception as e:
-        if str(e) =='empty vocabulary; perhaps the documents only contain stop words':
-            raise HTTPException(status_code=404, detail="분석할 데이터가 존재하지 않습니다.")
-        raise HTTPException(status_code=400, detail=f"error: {e}")
+    corp_id, meeting_id = response.corpId, response.meetingId
+    tokens = meetings[corp_id][meeting_id].get_all_tokens()
+    topic_model = TopicModel(tokens)
+    json_result = topic_model.make_lda_json()
+    embedding_vector_analyzer = EmbeddingVectorAnalyzer(corp_id=corp_id, meeting_id=meeting_id, embedding_model=embedding_model)
+    embedding_vector_analyzer.make_token_embeddings(tokens)
+    port = embedding_vector_analyzer.find_available_port()
+    embedding_vector_analyzer.run_tensorboard('127.0.0.1', port)
+    
+    file_name = f"wordcloud_{str(uuid1())}.png"
+    output_image_path = f"./data/{file_name}"
+    make_wordcloud(tokens=tokens, mask_image_path=None, width=800, height=400, output_image_name=file_name)
+    
+    await post_wordcloud(output_image_path, file_name, meeting_id)
+    
+    sentiment_result = sentiment_analyzer.analyze_token_sentiment(tokens)
+    
+    return {"result":"모든 분석이 성공적으로 완료되었습니다.", "topic_result":json_result, "wordcloud_filename":file_name, "sentiment_result":sentiment_result, "tensorboard_url":f"http://127.0.0.1:{port}/#projector"}
+
+    # except KeyError:
+    #     if corp_id not in meetings:
+    #         raise HTTPException(status_code=404, detail="corpId에 해당하는 데이터가 존재하지 않습니다.")
+    #     elif meeting_id not in meetings[corp_id]:
+    #         raise HTTPException(status_code=404, detail='meetingId에 해당하는 데이터가 존재하지 않습니다.')
+    # except Exception as e:
+    #     if str(e) =='empty vocabulary; perhaps the documents only contain stop words':
+    #         raise HTTPException(status_code=404, detail="분석할 데이터가 존재하지 않습니다.")
+    #     raise HTTPException(status_code=400, detail=f"error: {e}")
 
 
 '''질문 별 분석 엔드포인트''' 
@@ -270,7 +289,7 @@ async def generate_wordcloud(response: GenerateWordcloudIn):
     
     return {"result":"워드 클라우드가 성공적으로 생성되었습니다.", "wordcloud_filename":file_name}
 
-# 감정분석
+# 긍부정분석
 class AnalyzeSentimentIn(BaseModel):
     responses: list
     mostCommonK: int
@@ -285,7 +304,7 @@ class AnalyzeSentimentOut(BaseModel):
 async def analyze_sentiment(response: AnalyzeSentimentIn):
     logging.info(f"endpoint: /analyze-sentiment : {response}")
     sent_result, token_count, most_common_token = sentiment_analyzer.analyze_sentence_sentiment(response.responses, most_k=response.mostCommonK)
-    return {"result":"감정 분석이 성공적으로 완료되었습니다.", "sentiment_result":sent_result, "token_count":token_count, "most_common_token":most_common_token}
+    return {"result":"긍부정 분석이 성공적으로 완료되었습니다.", "sentiment_result":sent_result, "token_count":token_count, "most_common_token":most_common_token}
 
 # #시연용 분셕 사이트
 # from fastapi.templating import Jinja2Templates
