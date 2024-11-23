@@ -7,7 +7,7 @@ class SentimentAnalyzer:
         # 모델 초기화
         self.tokenizer = AutoTokenizer.from_pretrained("jaehyeong/koelectra-base-v3-generalized-sentiment-analysis")
         self.model = AutoModelForSequenceClassification.from_pretrained("jaehyeong/koelectra-base-v3-generalized-sentiment-analysis")
-        self.sentiment_classifier = TextClassificationPipeline(tokenizer=self.tokenizer, model=self.model)
+        self.sentiment_classifier = TextClassificationPipeline(tokenizer=self.tokenizer, model=self.model, device=0)
 
     def analyze_sentence_sentiment(self, responses, most_k=5):
         result = defaultdict(dict)
